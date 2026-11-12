@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg: #fff; --fg: #1f2328; --muted: #656d76; --line: #d0d7de; --accent: #2ea043; --err: #cf222e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1e1e1e; --fg: #e6edf3; --muted: #9198a1; --line: #3d444d; --err: #ff7b72; } }
+  body { margin: 0; padding: 20px; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; user-select: none; }
+  h1 { font-size: 16px; margin: 0 0 16px; display: flex; align-items: center; gap: 10px; }
+  h1 img { width: 32px; height: 32px; }
+  label { display: block; margin-bottom: 6px; color: var(--muted); }
+  #key {
+    width: 100%; box-sizing: border-box; padding: 10px; font-size: 16px; text-align: center;
+    border: 2px solid var(--line); border-radius: 8px; background: transparent; color: var(--fg); cursor: pointer;
+  }
+  #key:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; margin-top: 14px; }
+  button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  label.check { display: flex; align-items: center; gap: 8px; margin: 18px 0 0; color: var(--fg); cursor: pointer; }
+  label.check input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+  #msg { min-height: 20px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  #msg.err { color: var(--err); }
+</style>
+</head>
+<body>
+<h1><img src="logo.png" alt=""> Lunatrix — ตั้งค่า</h1>
+<label for="key">ปุ่มลัดเปิดปากกา (คลิกช่องนี้แล้วกดปุ่มที่ต้องการ)</label>
+<input id="key" readonly>
+<div class="row">
+  <button id="reset">ค่าเริ่มต้น</button>
+  <button id="save" class="primary" disabled>บันทึก</button>
+</div>
+<label class="check"><input type="checkbox" id="auto"> เปิดโปรแกรมอัตโนมัติเมื่อเปิดเครื่อง</label>
+<div id="msg" role="status"></div>
+<script>
+  const invoke = window.__TAURI__.core.invoke;
+  const key = document.getElementById('key'), save = document.getElementById('save'), msg = document.getElementById('msg');
+  const DEFAULT = 'Ctrl+Alt+P';
+  let saved = '';
+
+  const say = (t, err) => { msg.textContent = t; msg.classList.toggle('err', !!err); };
+  const set = v => { key.value = v; save.disabled = v === saved; };
+
+  invoke('get_hotkey').then(v => { saved = v; set(v); });
+
+  key.onfocus = () => say('กดปุ่มลัดที่ต้องการ เช่น Ctrl + Shift + D');
+  key.onkeydown = e => {
+    e.preventDefault();
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;   // wait for the real key
+    const k = e.code.replace(/^Key/, '').replace(/^Digit/, '');
+    const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean);
+    // a bare letter would steal normal typing system-wide; only F-keys may go alone
+    if (!mods.length && !/^F\d+$/.test(k)) return say('ต้องกดร่วมกับ Ctrl / Alt / Shift / Win', true);
+    set([...mods, k].join('+'));
+    say('กด "บันทึก" เพื่อใช้ปุ่มนี้');
+  };
+
+  save.onclick = () => invoke('set_hotkey', { hotkey: key.value })
+    .then(v => { saved = v; set(v); say('บันทึกแล้ว ✓'); })
+    .catch(e => say(e, true));
+  const auto = document.getElementById('auto');
+  invoke('get_autostart').then(v => auto.checked = v);
+  auto.onchange = () => invoke('set_autostart', { on: auto.checked })
+    .then(() => say(auto.checked ? 'จะเปิดอัตโนมัติเมื่อเปิดเครื่อง ✓' : 'ปิดการเปิดอัตโนมัติแล้ว'))
+    .catch(e => { auto.checked = !auto.checked; say(e, true); });
+
+  document.getElementById('reset').onclick = () => { set(DEFAULT); say('กด "บันทึก" เพื่อใช้ค่าเริ่มต้น'); };
+</script>
+</body>
+</html>

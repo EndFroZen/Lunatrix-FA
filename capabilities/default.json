@@ -1,0 +1,5 @@
+{
+  "identifier": "default",
+  "windows": ["main", "toolbar", "settings"],
+  "permissions": ["core:default", "core:window:allow-set-size"]
+}

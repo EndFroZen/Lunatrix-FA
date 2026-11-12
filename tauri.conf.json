@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Lunatrix",
+  "version": "0.1.0",
+  "identifier": "com.lunatrix.desktop",
+  "build": { "frontendDist": "dist" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "fullscreen": true,
+        "resizable": false
+      },
+      {
+        "label": "toolbar",
+        "url": "toolbar.html",
+        "visible": false,
+        "width": 12,
+        "height": 600,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false
+      },
+      {
+        "label": "settings",
+        "url": "settings.html",
+        "title": "Lunatrix — ตั้งค่า",
+        "visible": false,
+        "width": 380,
+        "height": 300,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "center": true
+      }
+    ]
+  },
+  "bundle": { "active": true, "targets": ["nsis"], "icon": ["icons/icon.ico"] }
+}

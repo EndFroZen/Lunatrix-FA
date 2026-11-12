@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }   /* real cursor set by updateCursor() */
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  const T = window.__TAURI__;
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const SIZES = { S: 2, M: 4, L: 8, XL: 14 };
+  // physical keys (e.code), so they work on a Thai keyboard layout too
+  const KEYS = { KeyP: 'pen', KeyN: 'pencil', KeyA: 'arrow', KeyR: 'rect', KeyO: 'circle', KeyE: 'eraser',
+                 Digit1: 'S', Digit2: 'M', Digit3: 'L', Digit4: 'XL' };
+  const FREEHAND = ['pen', 'pencil'];
+  const ERASE_RADIUS = 9;   // px around the cursor that counts as touching a line
+  const st = { tool: 'pen', color: '#ff3b30', size: 'M' };
+  let items = [], cur = null, erasing = false;
+  let history = [];         // snapshots of `items` before each change, for undo
+
+  const commit = () => history.push(items.slice());
+  function undo() { if (history.length) { items = history.pop(); redraw(); } }
+
+  // state lives here; the toolbar only mirrors it
+  function setState(p) {
+    Object.assign(st, p);
+    updateCursor();
+    T.event.emitTo('toolbar', 'state', st);
+  }
+
+  // 32x32 cursor showing the current tool in the current colour
+  function updateCursor() {
+    const c = st.color;
+    const cross = '<path d="M8 1v14M1 8h14" stroke="#fff" stroke-width="3"/><path d="M8 1v14M1 8h14" stroke="#000"/>';
+    const icon = d => `<g fill="none" stroke-linecap="round" stroke-linejoin="round">${d.replace(/S/g, '#000" stroke-width="4.5')}${d.replace(/S/g, c + '" stroke-width="2.5')}</g>`;
+    const body = '<path d="M2 30l2-7L22 5l5 5L9 28z" fill="' + c + '" stroke="#000" stroke-width="1.5" stroke-linejoin="round"/>';
+    const [svg, hx, hy] = {
+      pen:    [body + '<path d="M2 30l2-7 5 5z" fill="#000"/>', 2, 30],
+      pencil: [body + '<path d="M2 30l2-7 5 5z" fill="#f2d39b" stroke="#000"/><path d="M2 30l.9-3.2 2.3 2.3z" fill="#333"/>', 2, 30],
+      arrow:  [cross + icon('<path d="M17 29L29 17M22 17h7v7" stroke="S"/>'), 8, 8],
+      rect:   [cross + icon('<rect x="17" y="19" width="12" height="9" stroke="S"/>'), 8, 8],
+      circle: [cross + icon('<circle cx="23" cy="23" r="6" stroke="S"/>'), 8, 8],
+      eraser: [`<circle cx="16" cy="16" r="${ERASE_RADIUS}" fill="rgba(255,255,255,.5)" stroke="#000" stroke-width="1.5"/>`, 16, 16],
+    }[st.tool];
+    const url = 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">${svg}</svg>`);
+    cv.style.cursor = `url("${url}") ${hx} ${hy}, crosshair`;
+  }
+
+  function resize() {
+    const dpr = devicePixelRatio || 1;
+    cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    redraw();
+  }
+
+  // pencil = the colour through a fixed grainy mask (fixed so redraws don't shimmer)
+  const grain = {};
+  function pencilStyle(color) {
+    if (!grain[color]) {
+      const c = document.createElement('canvas'); c.width = c.height = 64;
+      const g = c.getContext('2d'), img = g.createImageData(64, 64);
+      const [r, gr, b] = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16));
+      for (let i = 0; i < img.data.length; i += 4) {
+        img.data.set([r, gr, b, Math.random() < 0.6 ? 110 + Math.random() * 145 : 0], i);
+      }
+      g.putImageData(img, 0, 0);
+      grain[color] = ctx.createPattern(c, 'repeat');
+    }
+    return grain[color];
+  }
+
+  const lineWidth = it => it.tool === 'pencil' ? Math.max(1.5, SIZES[it.size] * 0.8) : SIZES[it.size];
+
+  function pathOf(it) {
+    const p = new Path2D();
+    if (FREEHAND.includes(it.tool)) {
+      it.pts.forEach(([x, y], i) => i ? p.lineTo(x, y) : p.moveTo(x, y));
+      if (it.pts.length === 1) p.lineTo(it.pts[0][0] + 0.1, it.pts[0][1]);
+    } else {
+      const [x1, y1] = it.a, [x2, y2] = it.b;
+      if (it.tool === 'rect') p.rect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+      else if (it.tool === 'circle') p.ellipse((x1 + x2) / 2, (y1 + y2) / 2, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 2, 0, 0, Math.PI * 2);
+      else { // arrow
+        const ang = Math.atan2(y2 - y1, x2 - x1), h = 10 + SIZES[it.size] * 2.5;
+        p.moveTo(x1, y1); p.lineTo(x2, y2);
+        p.moveTo(x2 - h * Math.cos(ang - 0.45), y2 - h * Math.sin(ang - 0.45));
+        p.lineTo(x2, y2);
+        p.lineTo(x2 - h * Math.cos(ang + 0.45), y2 - h * Math.sin(ang + 0.45));
+      }
+    }
+    return p;
+  }
+
+  function drawItem(it) {
+    ctx.lineWidth = lineWidth(it);
+    ctx.strokeStyle = it.tool === 'pencil' ? pencilStyle(it.color) : it.color;
+    ctx.stroke(pathOf(it));
+  }
+
+  // object eraser: drop every item whose line passes under the cursor
+  function eraseAt(x, y) {
+    const dpr = devicePixelRatio || 1;   // isPointInStroke wants device pixels
+    const before = items.length;
+    items = items.filter(it => {
+      ctx.lineWidth = lineWidth(it) + ERASE_RADIUS * 2;
+      return !ctx.isPointInStroke(pathOf(it), x * dpr, y * dpr);
+    });
+    if (items.length !== before) redraw();
+  }
+  function redraw() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.lineCap = ctx.lineJoin = 'round';
+    items.forEach(drawItem);
+  }
+  function clearAll() { items = []; cur = null; history = []; redraw(); }   // closing: nothing to undo into
+
+  // Shift = perfect square / circle
+  function endPoint(e) {
+    let [x, y] = [e.clientX, e.clientY];
+    if (e.shiftKey && (cur.tool === 'rect' || cur.tool === 'circle')) {
+      const dx = x - cur.a[0], dy = y - cur.a[1], s = Math.max(Math.abs(dx), Math.abs(dy));
+      x = cur.a[0] + Math.sign(dx) * s; y = cur.a[1] + Math.sign(dy) * s;
+    }
+    return [x, y];
+  }
+
+  cv.onpointerdown = e => {
+    cv.setPointerCapture(e.pointerId);
+    commit();
+    if (st.tool === 'eraser') { erasing = true; return eraseAt(e.clientX, e.clientY); }
+    const p = [e.clientX, e.clientY];
+    cur = { tool: st.tool, color: st.color, size: st.size };
+    if (FREEHAND.includes(st.tool)) cur.pts = [p]; else { cur.a = p; cur.b = p; }
+    items.push(cur); redraw();
+  };
+  cv.onpointermove = e => {
+    if (erasing) return eraseAt(e.clientX, e.clientY);
+    if (!cur) return;
+    if (cur.pts) cur.pts.push([e.clientX, e.clientY]); else cur.b = endPoint(e);
+    redraw();
+  };
+  cv.onpointerup = () => {
+    // a click without dragging makes no shape
+    if (cur && cur.a && Math.hypot(cur.b[0] - cur.a[0], cur.b[1] - cur.a[1]) < 3) { items.pop(); redraw(); }
+    // nothing changed (empty click / erased nothing): don't leave a no-op undo step
+    const last = history[history.length - 1];
+    if (last && last.length === items.length && last.every((it, i) => it === items[i])) history.pop();
+    cur = null; erasing = false;
+  };
+
+  // commands from the toolbar window
+  T.event.listen('draw', ({ payload: { action, value } }) => {
+    if (action === 'undo') undo();
+    else if (action === 'clear') { commit(); items = []; redraw(); }
+    else if (action === 'sync') setState({});
+    else setState({ [action]: value });   // tool | size | color
+  });
+
+  addEventListener('keydown', e => {
+    if (e.ctrlKey && e.code === 'KeyZ') return undo();
+    if (e.code === 'Escape') return T.core.invoke('close');
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const v = KEYS[e.code];
+    if (v) setState(SIZES[v] ? { size: v } : { tool: v });
+  });
+  addEventListener('resize', resize);
+  resize();
+  setState({});
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+[package]
+name = "lunatrix"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# custom-protocol = serve dist/ from the exe (plain `cargo build` has no dev server)
+tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
