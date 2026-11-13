@@ -4,17 +4,42 @@
 <meta charset="utf-8">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
-  canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }   /* real cursor set by updateCursor() */
+  #c { display: block; width: 100vw; height: 100vh; cursor: crosshair; }   /* real cursor set by updateCursor() */
+  #lens { position: fixed; inset: 0; display: none; width: 100vw; height: 100vh; pointer-events: none; }
+  /* right-click-and-hold menu: the toolbar, laid out wide and short */
+  #menu { position: fixed; display: none; align-items: center; gap: 2px; padding: 6px; border-radius: 12px;
+          background: rgba(30,30,30,.94); box-shadow: 0 6px 24px rgba(0,0,0,.4); font: 600 11px system-ui, sans-serif; }
+  #menu.open { display: flex; animation: pop .12s ease-out; }
+  @keyframes pop { from { transform: scale(.9); opacity: 0; } }
+  #menu button { width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; color: #fff;
+                 display: grid; place-items: center; padding: 0; font: inherit; }
+  #menu button.sel { background: rgba(255,255,255,.22); }
+  #menu button.hot { background: #2ea043; }
+  #menu svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #menu .grid { display: flex; gap: 2px; }
+  #menu .grid button { width: 26px; }
+  #menu .dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid transparent; box-sizing: border-box; }
+  #menu [data-color].sel .dot { border-color: #fff; }
+  #menu hr { align-self: stretch; margin: 4px 3px; border: 0; border-left: 1px solid rgba(255,255,255,.25); }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  .shot { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; pointer-events: none; transform-origin: 100% 100%;
+          border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+  #toast { position: fixed; right: 24px; bottom: 24px; padding: 8px 14px; border-radius: 8px; pointer-events: none; opacity: 0;
+           background: rgba(30,30,30,.94); color: #fff; font: 13px system-ui, sans-serif; max-width: 40vw; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<canvas id="lens"></canvas>
+<div id="menu"></div>
+<div id="flash"></div>
+<div id="toast"></div>
 <script>
   const T = window.__TAURI__;
   const cv = document.getElementById('c'), ctx = cv.getContext('2d');
   const SIZES = { S: 2, M: 4, L: 8, XL: 14 };
   // physical keys (e.code), so they work on a Thai keyboard layout too
-  const KEYS = { KeyP: 'pen', KeyN: 'pencil', KeyA: 'arrow', KeyR: 'rect', KeyO: 'circle', KeyE: 'eraser',
+  const KEYS = { KeyP: 'pen', KeyN: 'pencil', KeyA: 'arrow', KeyR: 'rect', KeyO: 'circle', KeyE: 'eraser', KeyM: 'zoom',
                  Digit1: 'S', Digit2: 'M', Digit3: 'L', Digit4: 'XL' };
   const FREEHAND = ['pen', 'pencil'];
   const ERASE_RADIUS = 9;   // px around the cursor that counts as touching a line
@@ -28,12 +53,14 @@
   // state lives here; the toolbar only mirrors it
   function setState(p) {
     Object.assign(st, p);
+    if (p.tool === 'zoom') startZoom(); else drawLens();
     updateCursor();
     T.event.emitTo('toolbar', 'state', st);
   }
 
   // 32x32 cursor showing the current tool in the current colour
   function updateCursor() {
+    if (st.tool === 'zoom') return cv.style.cursor = 'zoom-in';
     const c = st.color;
     const cross = '<path d="M8 1v14M1 8h14" stroke="#fff" stroke-width="3"/><path d="M8 1v14M1 8h14" stroke="#000"/>';
     const icon = d => `<g fill="none" stroke-linecap="round" stroke-linejoin="round">${d.replace(/S/g, '#000" stroke-width="4.5')}${d.replace(/S/g, c + '" stroke-width="2.5')}</g>`;
@@ -128,8 +155,95 @@
     return [x, y];
   }
 
+  // ---- screen grab: the screen behind the overlay (Rust skips our windows) + our drawing on top ----
+  async function grabScreen() {
+    const buf = await T.core.invoke('capture');
+    const [w, h] = new Uint32Array(buf, 0, 2);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(buf, 8), w, h), 0, 0);
+    return c;
+  }
+
+  async function exportImage(how) {
+    try {
+      const c = await grabScreen();
+      c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height);
+      const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+      if (how === 'copy') {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        showDone(c, 'คัดลอกภาพแล้ว');
+      } else {
+        const d = new Date(), p = n => String(n).padStart(2, '0');
+        const name = `Lunatrix-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+        const path = await T.core.invoke('save_png', new Uint8Array(await blob.arrayBuffer()), { headers: { name } });
+        showDone(c, 'บันทึกแล้ว · ' + path);
+      }
+    } catch (e) { toast('ไม่สำเร็จ: ' + e); }
+  }
+
+  // camera flash, then the shot shrinks into the bottom-right corner and fades
+  function showDone(c, msg) {
+    document.getElementById('flash').animate([{ opacity: .8 }, { opacity: 0 }], { duration: 350, easing: 'ease-out' });
+    c.className = 'shot'; document.body.append(c);
+    const end = 'translate(-24px, -70px) scale(.2)';
+    c.animate([{ transform: 'none' }, { transform: end }], { duration: 450, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' });
+    c.animate([{ opacity: 1 }, { opacity: 0 }], { delay: 1800, duration: 300, fill: 'forwards' }).onfinish = () => c.remove();
+    toast(msg);
+  }
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none', offset: .1 },
+               { opacity: 1, offset: .9 }, { opacity: 0 }], { duration: 2200 });
+  }
+
+  // ---- magnifier: whole screen zoomed toward the mouse, +/− or wheel to zoom ----
+  const lens = document.getElementById('lens'), lx = lens.getContext('2d');
+  let zoom = 2, bg = null, mouse = [innerWidth / 2, innerHeight / 2];
+  async function startZoom() { bg = await grabScreen(); drawLens(); }
+  function setZoom(f) { zoom = Math.min(12, Math.max(1.25, zoom * f)); drawLens(); }
+  function drawLens() {
+    const on = st.tool === 'zoom' && bg && !menu.classList.contains('open');
+    lens.style.display = on ? 'block' : 'none';
+    if (!on) return;
+    const W = cv.width, H = cv.height, dpr = devicePixelRatio || 1;
+    if (lens.width !== W || lens.height !== H) { lens.width = W; lens.height = H; }
+    // the point under the mouse stays under the mouse; mouse at an edge = that edge of the screen
+    const sx = mouse[0] * dpr * (1 - 1 / zoom), sy = mouse[1] * dpr * (1 - 1 / zoom);
+    lx.imageSmoothingEnabled = false;   // crisp pixels when reading small text
+    lx.drawImage(bg, sx, sy, W / zoom, H / zoom, 0, 0, W, H);
+    lx.drawImage(cv, sx, sy, W / zoom, H / zoom, 0, 0, W, H);
+  }
+  addEventListener('wheel', e => { if (st.tool === 'zoom') setZoom(e.deltaY < 0 ? 1.25 : 0.8); });
+
+  // ---- right-click and hold: wide toolbar at the cursor, release on an item to pick it ----
+  const menu = document.getElementById('menu');
+  fetch('toolbar.html').then(r => r.text()).then(t => {   // reuse the toolbar's buttons as-is
+    const bar = new DOMParser().parseFromString(t, 'text/html').getElementById('bar');
+    bar.querySelector('#mode').nextElementSibling.remove(); bar.querySelector('#mode').remove();
+    menu.append(...bar.children);
+  });
+  const hotAt = (x, y) => document.elementFromPoint(x, y)?.closest('#menu button');
+  function openMenu(x, y) {
+    for (const k of ['tool', 'color', 'size']) menu.querySelectorAll(`[data-${k}]`).forEach(b => b.classList.toggle('sel', b.dataset[k] === st[k]));
+    menu.classList.add('open'); drawLens();
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    menu.style.left = Math.min(Math.max(8, x - w / 2), innerWidth - w - 8) + 'px';
+    menu.style.top = (y - h - 16 >= 8 ? y - h - 16 : y + 16) + 'px';   // above the cursor, not under it
+  }
+  function closeMenu(x, y) {
+    const b = hotAt(x, y);
+    menu.classList.remove('open');
+    menu.querySelectorAll('.hot').forEach(h => h.classList.remove('hot'));
+    if (b) { const k = ['tool', 'color', 'size'].find(k => b.dataset[k]); k ? handle(k, b.dataset[k]) : handle(b.id); }
+    drawLens();
+  }
+  addEventListener('contextmenu', e => e.preventDefault());
+
   cv.onpointerdown = e => {
     cv.setPointerCapture(e.pointerId);
+    if (e.button === 2) return openMenu(e.clientX, e.clientY);
+    if (st.tool === 'zoom') return;
     commit();
     if (st.tool === 'eraser') { erasing = true; return eraseAt(e.clientX, e.clientY); }
     const p = [e.clientX, e.clientY];
@@ -138,12 +252,19 @@
     items.push(cur); redraw();
   };
   cv.onpointermove = e => {
+    mouse = [e.clientX, e.clientY];
+    if (menu.classList.contains('open')) {
+      const b = hotAt(e.clientX, e.clientY);
+      return menu.querySelectorAll('button').forEach(x => x.classList.toggle('hot', x === b));
+    }
+    if (st.tool === 'zoom') return drawLens();
     if (erasing) return eraseAt(e.clientX, e.clientY);
     if (!cur) return;
     if (cur.pts) cur.pts.push([e.clientX, e.clientY]); else cur.b = endPoint(e);
     redraw();
   };
-  cv.onpointerup = () => {
+  cv.onpointerup = e => {
+    if (menu.classList.contains('open')) return closeMenu(e.clientX, e.clientY);
     // a click without dragging makes no shape
     if (cur && cur.a && Math.hypot(cur.b[0] - cur.a[0], cur.b[1] - cur.a[1]) < 3) { items.pop(); redraw(); }
     // nothing changed (empty click / erased nothing): don't leave a no-op undo step
@@ -152,16 +273,22 @@
     cur = null; erasing = false;
   };
 
-  // commands from the toolbar window
-  T.event.listen('draw', ({ payload: { action, value } }) => {
+  // commands from the toolbar window and the right-click menu
+  function handle(action, value) {
     if (action === 'undo') undo();
     else if (action === 'clear') { commit(); items = []; redraw(); }
+    else if (action === 'copy' || action === 'save') exportImage(action);
+    else if (action === 'close') T.core.invoke('close');
     else if (action === 'sync') setState({});
     else setState({ [action]: value });   // tool | size | color
-  });
+  }
+  T.event.listen('draw', ({ payload: { action, value } }) => handle(action, value));
 
   addEventListener('keydown', e => {
     if (e.ctrlKey && e.code === 'KeyZ') return undo();
+    if (e.ctrlKey && (e.code === 'KeyC' || e.code === 'KeyS')) { e.preventDefault(); return handle(e.code === 'KeyC' ? 'copy' : 'save'); }
+    if (st.tool === 'zoom' && ['Equal', 'NumpadAdd'].includes(e.code)) return setZoom(1.25);
+    if (st.tool === 'zoom' && ['Minus', 'NumpadSubtract'].includes(e.code)) return setZoom(0.8);
     if (e.code === 'Escape') return T.core.invoke('close');
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     const v = KEYS[e.code];

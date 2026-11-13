@@ -55,6 +55,8 @@
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg></button>
   <button data-tool="eraser" title="ยางลบ ลบทั้งเส้น (E)" aria-label="ยางลบ">
     <svg viewBox="0 0 24 24"><path d="M8 20h12M4 15l9-9 6 6-8 8H8z"/><path d="M8.5 10.5l6 6"/></svg></button>
+  <button data-tool="zoom" title="แว่นขยาย (M) · +/− หรือล้อเมาส์ = ซูม" aria-label="แว่นขยาย">
+    <svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="M15 15l5 5M7.5 10h5M10 7.5v5"/></svg></button>
   <hr>
   <div class="grid">
     <button data-color="#ff3b30" title="แดง" aria-label="สีแดง"><span class="dot" style="background:#ff3b30"></span></button>
@@ -74,12 +76,16 @@
     <svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h11a5 5 0 010 10h-3"/></svg></button>
   <button id="clear" title="ลบทั้งหมด" aria-label="ลบทั้งหมด">
     <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
+  <button id="copy" title="คัดลอกภาพหน้าจอ (Ctrl+C)" aria-label="คัดลอกภาพหน้าจอ">
+    <svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/></svg></button>
+  <button id="save" title="บันทึกภาพหน้าจอ (Ctrl+S) → Pictures\Lunatrix" aria-label="บันทึกภาพหน้าจอ">
+    <svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
   <button id="close" title="ปิดการวาด (Esc)" aria-label="ปิดการวาด">
     <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
 </div>
 <script>
   const T = window.__TAURI__, win = T.window.getCurrentWindow();
-  const H = 600, OPEN_W = 72, CLOSED_W = 12;   // keep H in sync with tauri.conf.json
+  const H = 680, OPEN_W = 72, CLOSED_W = 12;   // keep H in sync with tauri.conf.json
   const HIDE_DELAY = 800, ANIM = 250;          // ms; ANIM matches the CSS transition
   const draw = (action, value) => T.event.emitTo('main', 'draw', { action, value });
 
@@ -100,6 +106,8 @@
   document.getElementById('mode').onclick = () => T.core.invoke('toggle');
   document.getElementById('undo').onclick = () => draw('undo');
   document.getElementById('clear').onclick = () => draw('clear');
+  // overlay needs focus for the clipboard
+  for (const id of ['copy', 'save']) document.getElementById(id).onclick = async () => { await T.core.invoke('start_draw'); draw(id); };
   document.getElementById('close').onclick = () => T.core.invoke('close');
   // tool / colour / size: tell the overlay, and go back to drawing
   for (const k of ['tool', 'color', 'size']) {

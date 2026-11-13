@@ -11,6 +11,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_notification::NotificationExt;
 use windows::Win32::Foundation::{COLORREF, HWND};
+use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const HIDDEN: u8 = 0; // overlay + toolbar hidden
@@ -36,6 +37,7 @@ fn set_mode(app: &AppHandle, m: u8) {
             let _ = tb.show();
             let _ = ov.show();
             let _ = ov.set_focus();
+            let _ = ov.eval("if (st.tool === 'zoom') startZoom()"); // magnifier: re-grab the screen
         }
         _ => {}
     }
@@ -99,6 +101,66 @@ fn start_draw(app: AppHandle) {
 #[tauri::command]
 fn close(app: AppHandle) {
     set_mode(&app, HIDDEN);
+}
+
+/// Screen pixels under the calling window as [w u32][h u32][RGBA...].
+/// BitBlt without CAPTUREBLT skips layered windows, i.e. our overlay + toolbar (see not_occluding),
+/// so this is the screen *behind* the drawing; the page composites its own canvas on top.
+#[tauri::command]
+fn capture(window: WebviewWindow) -> Result<tauri::ipc::Response, String> {
+    let p = window.outer_position().map_err(|e| e.to_string())?;
+    let s = window.outer_size().map_err(|e| e.to_string())?;
+    let (w, h) = (s.width as i32, s.height as i32);
+    let mut buf = vec![0u8; 8 + (w * h * 4) as usize];
+    buf[..4].copy_from_slice(&(w as u32).to_le_bytes());
+    buf[4..8].copy_from_slice(&(h as u32).to_le_bytes());
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, h);
+        let old = SelectObject(mem, bmp.into());
+        let ok = BitBlt(mem, 0, 0, w, h, Some(screen), p.x, p.y, SRCCOPY);
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h, // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        GetDIBits(mem, bmp, 0, h as u32, Some(buf[8..].as_mut_ptr().cast()), &mut bi, DIB_RGB_COLORS);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+        ok.map_err(|e| e.to_string())?;
+    }
+    for px in buf[8..].chunks_exact_mut(4) {
+        px.swap(0, 2); // BGRA -> RGBA
+        px[3] = 255;
+    }
+    Ok(tauri::ipc::Response::new(buf))
+}
+
+/// Raw PNG body, file name in the "name" header. Saved to Pictures\Lunatrix.
+#[tauri::command]
+fn save_png(app: AppHandle, request: tauri::ipc::Request) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(png) = request.body() else { return Err("ไม่มีรูป".into()) };
+    let name = request
+        .headers()
+        .get("name")
+        .and_then(|v| v.to_str().ok())
+        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) // no paths
+        .ok_or("ชื่อไฟล์ไม่ถูกต้อง")?;
+    let dir = app.path().picture_dir().map_err(|e| e.to_string())?.join("Lunatrix");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let f = dir.join(format!("{name}.png"));
+    std::fs::write(&f, png).map_err(|e| format!("บันทึกไม่สำเร็จ: {e}"))?;
+    Ok(f.display().to_string())
 }
 
 #[tauri::command]
@@ -174,7 +236,7 @@ fn main() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![toggle, start_draw, close, get_hotkey, set_hotkey, get_autostart, set_autostart])
+        .invoke_handler(tauri::generate_handler![toggle, start_draw, close, capture, save_png, get_hotkey, set_hotkey, get_autostart, set_autostart])
         .on_window_event(|w, e| {
             // closing settings just hides it; the app lives in the tray
             if let WindowEvent::CloseRequested { api, .. } = e {
@@ -204,6 +266,7 @@ fn main() {
                     SetWindowLongW(t, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE.0 as i32);
                 }
             }
+            not_occluding(&tb); // layered => left out of capture()
             if let Some(mon) = tb.primary_monitor()? {
                 let y = mon.position().y + (mon.size().height as i32 - tb.outer_size()?.height as i32) / 2;
                 tb.set_position(PhysicalPosition::new(mon.position().x, y))?;
