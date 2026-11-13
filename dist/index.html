@@ -39,7 +39,7 @@
   const cv = document.getElementById('c'), ctx = cv.getContext('2d');
   const SIZES = { S: 2, M: 4, L: 8, XL: 14 };
   // physical keys (e.code), so they work on a Thai keyboard layout too
-  const KEYS = { KeyP: 'pen', KeyN: 'pencil', KeyA: 'arrow', KeyR: 'rect', KeyO: 'circle', KeyE: 'eraser', KeyM: 'zoom',
+  const KEYS = { KeyP: 'pen', KeyN: 'pencil', KeyA: 'arrow', KeyR: 'rect', KeyO: 'circle', KeyE: 'eraser', KeyM: 'zoom', KeyL: 'laser',
                  Digit1: 'S', Digit2: 'M', Digit3: 'L', Digit4: 'XL' };
   const FREEHAND = ['pen', 'pencil'];
   const ERASE_RADIUS = 9;   // px around the cursor that counts as touching a line
@@ -54,6 +54,7 @@
   function setState(p) {
     Object.assign(st, p);
     if (p.tool === 'zoom') startZoom(); else drawLens();
+    drawLaser();   // shows / removes the laser dot
     updateCursor();
     T.event.emitTo('toolbar', 'state', st);
   }
@@ -61,6 +62,7 @@
   // 32x32 cursor showing the current tool in the current colour
   function updateCursor() {
     if (st.tool === 'zoom') return cv.style.cursor = 'zoom-in';
+    if (st.tool === 'laser') return cv.style.cursor = 'none';   // the laser dot is the cursor
     const c = st.color;
     const cross = '<path d="M8 1v14M1 8h14" stroke="#fff" stroke-width="3"/><path d="M8 1v14M1 8h14" stroke="#000"/>';
     const icon = d => `<g fill="none" stroke-linecap="round" stroke-linejoin="round">${d.replace(/S/g, '#000" stroke-width="4.5')}${d.replace(/S/g, c + '" stroke-width="2.5')}</g>`;
@@ -214,6 +216,31 @@
     lx.drawImage(bg, sx, sy, W / zoom, H / zoom, 0, 0, W, H);
     lx.drawImage(cv, sx, sy, W / zoom, H / zoom, 0, 0, W, H);
   }
+  // ---- laser pointer: glowing dot + short fading trail, never part of the drawing ----
+  const LASER_MS = 600;   // how long the trail lingers
+  let laser = [], laserRaf = 0;   // trail points [x, y, time]
+  function drawLaser() {
+    const now = performance.now();
+    laser = laser.filter(p => now - p[2] < LASER_MS);
+    redraw();
+    laserRaf = 0;
+    if (st.tool !== 'laser') return;
+    ctx.save();
+    ctx.strokeStyle = ctx.fillStyle = ctx.shadowColor = st.color;
+    ctx.shadowBlur = 14;
+    for (let i = 1; i < laser.length; i++) {
+      const a = 1 - (now - laser[i][2]) / LASER_MS;
+      ctx.globalAlpha = a; ctx.lineWidth = 1 + 5 * a;
+      ctx.beginPath(); ctx.moveTo(laser[i - 1][0], laser[i - 1][1]); ctx.lineTo(laser[i][0], laser[i][1]); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(mouse[0], mouse[1], 7, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(mouse[0], mouse[1], 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    if (laser.length) laserRaf = requestAnimationFrame(drawLaser);   // keep fading until the trail is gone
+  }
+
   addEventListener('wheel', e => { if (st.tool === 'zoom') setZoom(e.deltaY < 0 ? 1.25 : 0.8); });
 
   // ---- right-click and hold: wide toolbar at the cursor, release on an item to pick it ----
@@ -243,7 +270,7 @@
   cv.onpointerdown = e => {
     cv.setPointerCapture(e.pointerId);
     if (e.button === 2) return openMenu(e.clientX, e.clientY);
-    if (st.tool === 'zoom') return;
+    if (st.tool === 'zoom' || st.tool === 'laser') return;
     commit();
     if (st.tool === 'eraser') { erasing = true; return eraseAt(e.clientX, e.clientY); }
     const p = [e.clientX, e.clientY];
@@ -258,6 +285,7 @@
       return menu.querySelectorAll('button').forEach(x => x.classList.toggle('hot', x === b));
     }
     if (st.tool === 'zoom') return drawLens();
+    if (st.tool === 'laser') { laser.push([e.clientX, e.clientY, performance.now()]); if (!laserRaf) drawLaser(); return; }
     if (erasing) return eraseAt(e.clientX, e.clientY);
     if (!cur) return;
     if (cur.pts) cur.pts.push([e.clientX, e.clientY]); else cur.b = endPoint(e);
@@ -265,6 +293,7 @@
   };
   cv.onpointerup = e => {
     if (menu.classList.contains('open')) return closeMenu(e.clientX, e.clientY);
+    if (!cur && !erasing) return;   // zoom / laser: nothing was started, so no undo step to tidy
     // a click without dragging makes no shape
     if (cur && cur.a && Math.hypot(cur.b[0] - cur.a[0], cur.b[1] - cur.a[1]) < 3) { items.pop(); redraw(); }
     // nothing changed (empty click / erased nothing): don't leave a no-op undo step

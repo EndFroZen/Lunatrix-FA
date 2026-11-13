@@ -103,11 +103,30 @@ fn close(app: AppHandle) {
     set_mode(&app, HIDDEN);
 }
 
-/// Screen pixels under the calling window as [w u32][h u32][RGBA...].
-/// BitBlt without CAPTUREBLT skips layered windows, i.e. our overlay + toolbar (see not_occluding),
-/// so this is the screen *behind* the drawing; the page composites its own canvas on top.
+/// Set a layered window's opacity (254 = visible, see not_occluding; 0 = gone, still on top).
+fn set_alpha(w: &WebviewWindow, a: u8) {
+    if let Some(h) = hwnd(w) {
+        unsafe {
+            let _ = SetLayeredWindowAttributes(h, COLORREF(0), a, LWA_ALPHA);
+        }
+    }
+}
+
+/// Screen pixels under the calling window as [w u32][h u32][RGBA...], *without* our windows:
+/// overlay + toolbar go fully transparent for the grab (DWM still composites layered windows),
+/// so the page can composite its own canvas on top without zooming/doubling itself.
 #[tauri::command]
-fn capture(window: WebviewWindow) -> Result<tauri::ipc::Response, String> {
+async fn capture(app: AppHandle, window: WebviewWindow) -> Result<tauri::ipc::Response, String> {
+    let ours: Vec<_> = ["main", "toolbar"].iter().filter_map(|l| app.get_webview_window(l)).collect();
+    ours.iter().for_each(|w| set_alpha(w, 0));
+    // ponytail: fixed wait for DWM to drop our windows (~3 frames), DwmFlush if this ever blinks wrong
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let shot = grab(&window);
+    ours.iter().for_each(|w| set_alpha(w, 254));
+    shot
+}
+
+fn grab(window: &WebviewWindow) -> Result<tauri::ipc::Response, String> {
     let p = window.outer_position().map_err(|e| e.to_string())?;
     let s = window.outer_size().map_err(|e| e.to_string())?;
     let (w, h) = (s.width as i32, s.height as i32);
@@ -119,7 +138,7 @@ fn capture(window: WebviewWindow) -> Result<tauri::ipc::Response, String> {
         let mem = CreateCompatibleDC(Some(screen));
         let bmp = CreateCompatibleBitmap(screen, w, h);
         let old = SelectObject(mem, bmp.into());
-        let ok = BitBlt(mem, 0, 0, w, h, Some(screen), p.x, p.y, SRCCOPY);
+        let ok = BitBlt(mem, 0, 0, w, h, Some(screen), p.x, p.y, ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0)); // incl. other apps' layered windows
         let mut bi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -266,7 +285,7 @@ fn main() {
                     SetWindowLongW(t, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE.0 as i32);
                 }
             }
-            not_occluding(&tb); // layered => left out of capture()
+            not_occluding(&tb); // layered => capture() can fade it out
             if let Some(mon) = tb.primary_monitor()? {
                 let y = mon.position().y + (mon.size().height as i32 - tb.outer_size()?.height as i32) / 2;
                 tb.set_position(PhysicalPosition::new(mon.position().x, y))?;

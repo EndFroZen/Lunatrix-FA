@@ -55,6 +55,8 @@
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg></button>
   <button data-tool="eraser" title="ยางลบ ลบทั้งเส้น (E)" aria-label="ยางลบ">
     <svg viewBox="0 0 24 24"><path d="M8 20h12M4 15l9-9 6 6-8 8H8z"/><path d="M8.5 10.5l6 6"/></svg></button>
+  <button data-tool="laser" title="เลเซอร์ชี้ (L) · ไม่ทิ้งเส้นไว้" aria-label="เลเซอร์ชี้">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></button>
   <button data-tool="zoom" title="แว่นขยาย (M) · +/− หรือล้อเมาส์ = ซูม" aria-label="แว่นขยาย">
     <svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="M15 15l5 5M7.5 10h5M10 7.5v5"/></svg></button>
   <hr>
@@ -85,7 +87,7 @@
 </div>
 <script>
   const T = window.__TAURI__, win = T.window.getCurrentWindow();
-  const H = 680, OPEN_W = 72, CLOSED_W = 12;   // keep H in sync with tauri.conf.json
+  const H = 720, OPEN_W = 72, CLOSED_W = 12;   // keep H in sync with tauri.conf.json
   const HIDE_DELAY = 800, ANIM = 250;          // ms; ANIM matches the CSS transition
   const draw = (action, value) => T.event.emitTo('main', 'draw', { action, value });
 
